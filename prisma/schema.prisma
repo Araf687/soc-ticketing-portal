@@ -1,0 +1,301 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// For User Access
+enum UserLevel {
+  L1
+  L2
+  L3
+
+  @@map("user_level")
+}
+
+enum UserStatus {
+  active
+  inactive
+  suspended
+
+  @@map("user_status")
+}
+
+model User {
+  id           String     @id @default(uuid(7)) @db.Uuid
+  email        String     @unique
+  fullName     String     @map("full_name")
+  passwordHash String     @map("password_hash")
+  userLevel    String     @map("user_level")
+  status       UserStatus @default(active) @map("status")
+  mfaEnabled   Boolean    @default(false) @map("mfa_enabled")
+  mfaSecretEnc String?    @map("mfa_secret_enc")
+  lastLoginAt  DateTime?  @map("last_login_at") @db.Timestamp(6)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  roles                 UserRole[]
+  teams                 TeamMember[]
+  sessions              UserSession[]
+  addedSuppressionRules SuppressionRule[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserRole {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  roleId    String   @map("role_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  roleId       String   @map("role_id") @db.Uuid
+  permissionId String   @map("permission_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model Team {
+  id        String     @id @default(uuid(7)) @db.Uuid
+  name      String     @unique
+  teamLevel UserLevel? @map("team_level")
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt DateTime   @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  members TeamMember[]
+
+  @@map("teams")
+}
+
+model TeamMember {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  teamId    String   @map("team_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  user      User     @relation(fields: [userId], references: [id])
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([teamId])
+  @@index([userId])
+  @@map("team_members")
+}
+
+model UserSession {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  refreshTokenHash String    @unique @map("refresh_token_hash")
+  ipAddress        String?   @map("ip_address") @db.Inet
+  userAgent        String?   @map("user_agent")
+  expiresAt        DateTime  @map("expires_at") @db.Timestamp(6)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamp(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamp(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_sessions")
+}
+
+// ----------------------------------------------------------------------------------------------------------------
+
+// For Asset Management
+enum AssetCriticality {
+  low
+  medium
+  high
+  critical
+
+  @@map("asset_criticality")
+}
+
+enum AgentStatus {
+  active
+  disconnected
+  pending
+  never_connected
+
+  @@map("agent_status")
+}
+
+model Asset {
+  id            String      @id @default(uuid(7)) @db.Uuid
+  wazuhAgentId  String?     @unique @map("wazuh_agent_id")
+  ipAddress     String?     @map("ip_address") @db.Inet
+  name          String
+  description   String?
+  hostname      String?
+  osName        String?     @map("os_name")
+  osVersion     String?     @map("os_version")
+  agentVersion  String?     @map("agent_version")
+  agentStatus   AgentStatus @default(active) @map("agent_status")
+  lastKeepAlive DateTime?   @map("last_keep_alive") @db.Timestamp(6)
+
+  ownerUserName  String?          @map("owner_user_name")
+  ownerUserEmail String?          @map("owner_user_email")
+  department     String?          @map("department")
+  location       String?          @map("location")
+  criticality    AssetCriticality @default(medium)
+  tags           String[]         @default([]) @map("tags")
+  notes          String?          @map("notes")
+  groupId        String?          @map("group_id") @db.Uuid
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  assetGroup       AssetGroup?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  suppressionRules SuppressionRule[]
+
+  @@index([hostname, ipAddress])
+  @@map("assets")
+}
+
+model AssetGroup {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamp(6)
+
+  assets Asset[]
+
+  @@map("asset_groups")
+}
+
+// ticket configuration
+model SuppressionRule {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  name        String
+  matchFilter Json      @map("match_filter") @db.JsonB //{ruleId,agent id, source ip, rule group}
+  reason      String
+  expiresAt   DateTime? @map("expires_at") @db.Timestamptz
+  hitCount    Int       @default(0) @map("hit_count")
+  isEnabled   Boolean   @default(true) @map("is_enabled")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  assetId     String? @db.Uuid
+  createdById String? @map("created_by") @db.Uuid
+
+  createdBy User?  @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  asset     Asset? @relation(fields: [assetId], references: [id])
+
+  @@map("suppression_rules")
+}
+
+model Playbook {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  name            String          @unique
+  description     String?
+  defaultPriority TicketPriority? @map("default_priority")
+  matchFilter     Json            @map("match_filter") @db.JsonB //{rule group, min level ,agent id}  
+  isEnabled       Boolean         @default(true) @map("is_enabled")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+
+  playbookSteps PlaybookStep[]
+
+  @@map("playbooks")
+}
+
+model PlaybookStep {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  playbookId   String   @map("playbook_id") @db.Uuid
+  orderNo      Int      @map("order_no")
+  title        String
+  instructions String
+  isRequired   Boolean  @default(true) @map("is_required")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  playbook Playbook @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+
+  @@index([playbookId])
+  @@map("playbook_steps")
+}
+
+model GroupingRule {
+  id                 String   @id @default(uuid(7)) @db.Uuid
+  name               String
+  description        String?
+  matchFilter        Json     @map("match_filter") @db.JsonB //{rule group, min level ,agent id} 
+  keyField           String   @map("key_field")
+  orderNo            Int      @map("order_no")
+  windowMinutes      Int      @default(60) @map("window_minutes")
+  autoTicketMinLevel Int?     @map("auto_ticket_min_level")
+  isEnabled          Boolean  @default(true) @map("is_enabled")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("grouping_rules")
+}
+
+model SlaPolicy {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  priority          String   @unique
+  ackMinutes        Int?     @map("ack_minutes")
+  resolveMinutes    Int?     @map("resolve_minutes")
+  businessHoursOnly Boolean  @default(false) @map("business_hours_only")
+  escalateOnBreach  Boolean  @default(false) @map("escalate_on_breach")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("sla_policies")
+}
+
+// ----------------------------------------------------------------------------------------------------------------
+// Ticket and Alert Management
+
+enum TicketPriority {
+  P1
+  P2
+  P3
+  P4
+
+  @@map("ticket_priority")
+}
