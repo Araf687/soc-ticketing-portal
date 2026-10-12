@@ -30,7 +30,7 @@ model User {
   email        String     @unique
   fullName     String     @map("full_name")
   passwordHash String     @map("password_hash")
-  userLevel    String     @map("user_level")
+  userLevel    UserLevel  @map("user_level")
   status       UserStatus @default(active) @map("status")
   mfaEnabled   Boolean    @default(false) @map("mfa_enabled")
   mfaSecretEnc String?    @map("mfa_secret_enc")
@@ -42,6 +42,11 @@ model User {
   teams                 TeamMember[]
   sessions              UserSession[]
   addedSuppressionRules SuppressionRule[]
+  ledIncidents          Incident[]
+  assignedTickets       Ticket[]          @relation("TicketAssignee")
+  createdTickets        Ticket[]          @relation("TicketCreatedBy")
+  ticketEvents          TicketEvent[]
+  comments              Comment[]
 
   @@map("users")
 }
@@ -108,6 +113,7 @@ model Team {
   updatedAt DateTime   @updatedAt @map("updated_at") @db.Timestamp(6)
 
   members TeamMember[]
+  tickets Ticket[]
 
   @@map("teams")
 }
@@ -190,6 +196,8 @@ model Asset {
 
   assetGroup       AssetGroup?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
   suppressionRules SuppressionRule[]
+  tickets          Ticket[]
+  alerts           Alert[]
 
   @@index([hostname, ipAddress])
   @@map("assets")
@@ -239,6 +247,7 @@ model Playbook {
   updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz
 
   playbookSteps PlaybookStep[]
+  tickets       Ticket[]
 
   @@map("playbooks")
 }
@@ -264,7 +273,7 @@ model GroupingRule {
   name               String
   description        String?
   matchFilter        Json     @map("match_filter") @db.JsonB //{rule group, min level ,agent id} 
-  keyField           String   @map("key_field")
+  keyField           String[] @map("key_field")
   orderNo            Int      @map("order_no")
   windowMinutes      Int      @default(60) @map("window_minutes")
   autoTicketMinLevel Int?     @map("auto_ticket_min_level")
@@ -272,12 +281,14 @@ model GroupingRule {
   createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
+  tickets Ticket[]
+
   @@map("grouping_rules")
 }
 
 model SlaPolicy {
   id                String   @id @default(uuid(7)) @db.Uuid
-  priority          String   @unique
+  TicketPriority    String   @unique
   ackMinutes        Int?     @map("ack_minutes")
   resolveMinutes    Int?     @map("resolve_minutes")
   businessHoursOnly Boolean  @default(false) @map("business_hours_only")
@@ -298,4 +309,239 @@ enum TicketPriority {
   P4
 
   @@map("ticket_priority")
+}
+
+enum TicketSeverity {
+  very_low // level 0–5
+  medium // level 6–8
+  high // level 9–15
+
+  @@map("ticket_severity")
+}
+
+enum TicketStatus {
+  new // system banalo, keu dhore ni
+  assigned // karo naame deoa hoyeche
+  in_progress // analyst kaj shuru koreche
+  escalated // upor level (L2/L3) e pathano hoyeche
+  on_hold // opekkha (jemon IT team er uttor) — SLA clock pause
+  resolved // analyst bolche shomadhan hoyeche
+  closed // final, review shesh
+  false_positive // ashol attack chilo na
+  merged // onno ticket e merge hoye geche
+
+  @@map("ticket_status")
+}
+
+enum TicketSource {
+  auto // system banalo (alert grouping theke)
+  promoted // ticket chara alert theke analyst banalo
+  manual // analyst alert chara nijei banalo
+
+  @@map("ticket_source")
+}
+
+enum ResolutionCode {
+  true_positive
+  benign
+  false_positive
+  duplicate
+
+  @@map("resolution_code")
+}
+
+enum AlertStatus {
+  new // saved, not in a ticket (level too low)
+  linked // in a ticket
+  ignored // hidden by a suppression rule
+  false_positive // marked by an analyst
+
+  @@map("alert_status")
+}
+
+enum TicketCategory {
+  brute_force
+  malware
+  phishing
+  policy_violation
+  misconfiguration
+  other
+
+  @@map("ticket_category")
+}
+
+model Incident {
+  id         String         @id @default(uuid()) @db.Uuid
+  number     BigInt         @unique
+  title      String
+  summary    String?
+  severity   TicketSeverity
+  status     TicketStatus   @default(new)
+  leadUserId String?        @map("lead_user_id") @db.Uuid
+  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamp
+
+  leadUser User?    @relation(fields: [leadUserId], references: [id], onDelete: SetNull)
+  tickets  Ticket[]
+}
+
+model Ticket {
+  id          String          @id @default(uuid(7)) @db.Uuid
+  number      Int             @unique @default(autoincrement()) // #1001, #1002 ...
+  title       String
+  description String?
+  status      TicketStatus    @default(new)
+  priority    TicketPriority  @default(P3)
+  severity    TicketSeverity  @default(medium)
+  source      TicketSource    @default(auto)
+  tier        UserLevel       @default(L1)
+  category    TicketCategory?
+
+  // grouping
+  groupingRuleId  String?  @map("grouping_rule_id") @db.Uuid
+  groupingKey     String?  @map("grouping_key")
+  alertCount      Int      @default(0) @map("alert_count")
+  maxRuleLevel    Int?     @map("max_rule_level") @db.SmallInt
+  mitreTactics    String[] @default([]) @map("mitre_tactics")
+  mitreTechniques String[] @default([]) @map("mitre_techniques")
+  tags            String[] @default([])
+
+  // relations
+  primaryAssetId String? @map("primary_asset_id") @db.Uuid
+  assigneeId     String? @map("assignee_id") @db.Uuid
+  teamId         String? @map("team_id") @db.Uuid
+  createdById    String? @map("created_by") @db.Uuid // null = system
+  incidentId     String? @map("incident_id") @db.Uuid
+  playbookId     String? @map("playbook_id") @db.Uuid
+  mergedIntoId   String? @map("merged_into_id") @db.Uuid
+
+  // timestamps for metrics (MTTD / MTTA / MTTR)
+  firstAlertAt   DateTime? @map("first_alert_at") @db.Timestamptz
+  lastAlertAt    DateTime? @map("last_alert_at") @db.Timestamptz
+  acknowledgedAt DateTime? @map("acknowledged_at") @db.Timestamptz
+  escalatedAt    DateTime? @map("escalated_at") @db.Timestamptz
+  resolvedAt     DateTime? @map("resolved_at") @db.Timestamptz
+  closedAt       DateTime? @map("closed_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  // outcome
+  resolutionCode ResolutionCode? @map("resolution_code")
+  resolutionNote String?         @map("resolution_note")
+
+  groupingRule GroupingRule? @relation(fields: [groupingRuleId], references: [id], onDelete: SetNull)
+  primaryAsset Asset?        @relation(fields: [primaryAssetId], references: [id], onDelete: SetNull)
+  assignee     User?         @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  team         Team?         @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  createdBy    User?         @relation("TicketCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  incident     Incident?     @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+  playbook     Playbook?     @relation(fields: [playbookId], references: [id], onDelete: SetNull)
+  mergedInto   Ticket?       @relation("TicketMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom   Ticket[]      @relation("TicketMerge")
+  alerts       Alert[]
+  events       TicketEvent[]
+  comments     Comment[]
+
+  @@index([status, priority])
+  @@index([assigneeId, status])
+  @@index([teamId, status])
+  @@index([groupingRuleId, groupingKey, status])
+  @@index([primaryAssetId])
+  @@index([incidentId])
+  @@index([createdAt(sort: Desc)])
+  @@map("tickets")
+}
+
+model Alert {
+  id           String      @id @default(uuid(7)) @db.Uuid
+  wazuhAlertId String      @unique @map("wazuh_alert_id") // same alert is never saved twice
+  assetId      String?     @map("asset_id") @db.Uuid
+  ticketId     String?     @map("ticket_id") @db.Uuid
+  status       AlertStatus @default(new)
+
+  // copied from the Wazuh JSON
+  ruleId          String    @map("rule_id")
+  ruleLevel       Int       @map("rule_level") @db.SmallInt
+  ruleDescription String?   @map("rule_description")
+  ruleGroups      String[]  @default([]) @map("rule_groups")
+  mitreTactics    String[]  @default([]) @map("mitre_tactics")
+  mitreTechniques String[]  @default([]) @map("mitre_techniques")
+  agentId         String?   @map("agent_id")
+  agentName       String?   @map("agent_name")
+  srcIp           String?   @map("src_ip") @db.Inet
+  dstIp           String?   @map("dst_ip") @db.Inet
+  srcUser         String?   @map("src_user")
+  dstUser         String?   @map("dst_user")
+  location        String? // log source path
+  eventTime       DateTime? @map("event_time") @db.Timestamptz // when it happened
+  alertTime       DateTime  @map("alert_time") @db.Timestamptz // Wazuh "timestamp"
+  receivedAt      DateTime  @default(now()) @map("received_at") @db.Timestamptz
+  groupingKey     String?   @map("grouping_key")
+  raw             Json // full Wazuh alert
+
+  asset  Asset?  @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  ticket Ticket? @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+
+  @@index([status, alertTime(sort: Desc)])
+  @@index([ticketId])
+  @@index([assetId, alertTime(sort: Desc)])
+  @@index([ruleId, alertTime(sort: Desc)])
+  @@map("alerts")
+}
+
+// -----------------------------------------------------------
+
+enum TicketEventType {
+  created
+  alert_linked
+  status_changed
+  assigned
+  priority_changed
+  severity_changed
+  escalated
+  commented
+  merged
+  merged_from
+  linked
+  playbook_attached
+  task_completed
+  sla_breached
+  reopened
+
+  @@map("ticket_event_type")
+}
+
+model TicketEvent {
+  id        BigInt          @id @default(autoincrement())
+  ticketId  String          @map("ticket_id") @db.Uuid
+  actorId   String?         @map("actor_id") @db.Uuid // null = system
+  eventType TicketEventType @map("event_type")
+  oldValue  Json?           @map("old_value")
+  newValue  Json?           @map("new_value")
+  note      String?
+  createdAt DateTime        @default(now()) @map("created_at") @db.Timestamptz
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actor  User?  @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@index([eventType, createdAt])
+  @@map("ticket_events")
+}
+
+model Comment {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  ticketId   String    @map("ticket_id") @db.Uuid
+  authorId   String?   @map("author_id") @db.Uuid
+  body       String
+  isInternal Boolean   @default(true) @map("is_internal")
+  editedAt   DateTime? @map("edited_at") @db.Timestamptz
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author User?  @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@map("comments")
 }
