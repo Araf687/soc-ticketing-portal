@@ -8,6 +8,18 @@ datasource db {
   provider = "postgresql"
 }
 
+//for wazuh api call 
+model IngestCursor {
+  source        String    @id // "wazuh"
+  lastAlertId   String?   @map("last_alert_id")
+  lastPolledAt  DateTime? @map("last_polled_at") @db.Timestamptz
+  lastSuccessAt DateTime? @map("last_success_at") @db.Timestamptz
+  lastError     String?   @map("last_error")
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("ingest_cursors")
+}
+
 // For User Access
 enum UserLevel {
   L1
@@ -85,6 +97,7 @@ model UserRole {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, roleId])
   @@index([userId])
   @@index([roleId])
   @@map("user_roles")
@@ -123,7 +136,7 @@ model TeamMember {
   teamId    String   @map("team_id") @db.Uuid
   userId    String   @map("user_id") @db.Uuid
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
 
@@ -194,10 +207,10 @@ model Asset {
   createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamp(6)
   updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamp(6)
 
-  assetGroup       AssetGroup?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  suppressionRules SuppressionRule[]
-  tickets          Ticket[]
-  alerts           Alert[]
+  assetGroup AssetGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
+  tickets Ticket[]
+  alerts  Alert[]
 
   @@index([hostname, ipAddress])
   @@map("assets")
@@ -226,12 +239,9 @@ model SuppressionRule {
   isEnabled   Boolean   @default(true) @map("is_enabled")
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  createdById String?   @map("created_by") @db.Uuid
 
-  assetId     String? @db.Uuid
-  createdById String? @map("created_by") @db.Uuid
-
-  createdBy User?  @relation(fields: [createdById], references: [id], onDelete: SetNull)
-  asset     Asset? @relation(fields: [assetId], references: [id])
+  createdBy User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
   @@map("suppression_rules")
 }
@@ -270,13 +280,13 @@ model PlaybookStep {
 
 model GroupingRule {
   id                 String   @id @default(uuid(7)) @db.Uuid
-  name               String
+  name               String   @unique
   description        String?
   matchFilter        Json     @map("match_filter") @db.JsonB //{rule group, min level ,agent id} 
-  keyField           String[] @map("key_field")
-  orderNo            Int      @map("order_no")
+  keyFields          String[] @map("key_field")
+  orderNo            Int      @default(100) @map("order_no")
   windowMinutes      Int      @default(60) @map("window_minutes")
-  autoTicketMinLevel Int?     @map("auto_ticket_min_level")
+  autoTicketMinLevel Int?     @default(6) @map("auto_ticket_min_level")
   isEnabled          Boolean  @default(true) @map("is_enabled")
   createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz
@@ -287,14 +297,14 @@ model GroupingRule {
 }
 
 model SlaPolicy {
-  id                String   @id @default(uuid(7)) @db.Uuid
-  TicketPriority    String   @unique
-  ackMinutes        Int?     @map("ack_minutes")
-  resolveMinutes    Int?     @map("resolve_minutes")
-  businessHoursOnly Boolean  @default(false) @map("business_hours_only")
-  escalateOnBreach  Boolean  @default(false) @map("escalate_on_breach")
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  id                String         @id @default(uuid(7)) @db.Uuid
+  priority          TicketPriority @unique
+  ackMinutes        Int            @map("ack_minutes")
+  resolveMinutes    Int            @map("resolve_minutes")
+  businessHoursOnly Boolean        @default(false) @map("business_hours_only")
+  escalateOnBreach  Boolean        @default(true) @map("escalate_on_breach")
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime       @updatedAt @map("updated_at") @db.Timestamptz
 
   @@map("sla_policies")
 }
@@ -371,18 +381,22 @@ enum TicketCategory {
 }
 
 model Incident {
-  id         String         @id @default(uuid()) @db.Uuid
-  number     BigInt         @unique
+  id         String         @id @default(uuid(7)) @db.Uuid
+  number     Int            @unique @default(autoincrement()) // INC-1, INC-2 ...
   title      String
   summary    String?
   severity   TicketSeverity
   status     TicketStatus   @default(new)
   leadUserId String?        @map("lead_user_id") @db.Uuid
+  closedAt   DateTime?      @map("closed_at") @db.Timestamptz
   createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamp
+  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz
 
   leadUser User?    @relation(fields: [leadUserId], references: [id], onDelete: SetNull)
   tickets  Ticket[]
+
+  @@index([status])
+  @@map("incidents")
 }
 
 model Ticket {
@@ -455,6 +469,7 @@ model Ticket {
 model Alert {
   id           String      @id @default(uuid(7)) @db.Uuid
   wazuhAlertId String      @unique @map("wazuh_alert_id") // same alert is never saved twice
+  agentIp      String?     @map("agent_ip") @db.Inet
   assetId      String?     @map("asset_id") @db.Uuid
   ticketId     String?     @map("ticket_id") @db.Uuid
   status       AlertStatus @default(new)
